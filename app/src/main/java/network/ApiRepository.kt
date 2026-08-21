@@ -1,5 +1,7 @@
 package com.example.gibddochevidets.network
 
+import retrofit2.HttpException
+import android.util.Log
 import okhttp3.ResponseBody
 import android.content.Context
 import android.net.Uri
@@ -23,7 +25,7 @@ class ApiRepository(
     private val api: ApiService =
         Retrofit.Builder()
             .baseUrl(
-                "http://193.124.115.164:4401/"
+                "https://xn--e1afhclgq.xn--p1ai:4401/"
             )
             .addConverterFactory(
                 GsonConverterFactory.create()
@@ -53,30 +55,95 @@ class ApiRepository(
                 appContext
             )
 
-        val result =
-            api.registerDevice(
-                clientApp = clientApp,
+        Log.e(
+            "REGISTER_DEBUG",
+            "========== REGISTER =========="
+        )
 
-                request =
-                    RegisterDeviceRequest(
-                        fingerprint_hash =
-                            fingerprint,
+        Log.e(
+            "REGISTER_DEBUG",
+            "fingerprint = $fingerprint"
+        )
 
-                        push_token =
-                            null
-                    )
+        Log.e(
+            "REGISTER_DEBUG",
+            "fingerprint length = ${fingerprint.length}"
+        )
+
+        Log.e(
+            "REGISTER_DEBUG",
+            "clientApp = $clientApp"
+        )
+
+        try {
+
+            val result =
+                api.registerDevice(
+
+                    clientApp =
+                        clientApp,
+
+                    request =
+                        RegisterDeviceRequest(
+
+                            fingerprint_hash =
+                                fingerprint,
+
+                            push_token =
+                                null
+                        )
+                )
+
+            Log.e(
+                "REGISTER_DEBUG",
+                "REGISTER SUCCESS"
             )
 
-        session.deviceId =
-            result.device_id
+            session.deviceId =
+                result.device_id
 
-        session.accessToken =
-            result.access_token
+            session.accessToken =
+                result.access_token
 
-        session.fingerprintHash =
-            fingerprint
+            session.fingerprintHash =
+                fingerprint
 
-        return result
+            return result
+
+        } catch (e: HttpException) {
+
+            Log.e(
+                "REGISTER_DEBUG",
+                "HTTP CODE = ${e.code()}"
+            )
+
+            Log.e(
+                "REGISTER_DEBUG",
+                "HTTP MESSAGE = ${e.message()}"
+            )
+
+            val errorBody =
+                e.response()
+                    ?.errorBody()
+                    ?.string()
+
+            Log.e(
+                "REGISTER_DEBUG",
+                "SERVER BODY = $errorBody"
+            )
+
+            throw e
+
+        } catch (e: Exception) {
+
+            Log.e(
+                "REGISTER_DEBUG",
+                "OTHER ERROR",
+                e
+            )
+
+            throw e
+        }
     }
 
 

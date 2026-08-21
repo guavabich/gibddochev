@@ -1,6 +1,13 @@
 package com.example.gibddochevidets
 
 
+import android.os.Environment
+import android.provider.OpenableColumns
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
+import com.google.android.gms.tasks.CancellationTokenSource
 import android.content.ContentValues
 import android.util.LruCache
 import android.util.Log
@@ -62,6 +69,9 @@ class ChatActivity : Activity() {
     // ============================================================
     // VIEWS
     // ============================================================
+
+
+
 
     private lateinit var chatRoot: LinearLayout
     private lateinit var chatScroll: ScrollView
@@ -187,18 +197,22 @@ class ChatActivity : Activity() {
     private lateinit var locationManager: LocationManager
 
     private var locationListener: LocationListener? = null
+    private lateinit var fusedLocationClient:
+            com.google.android.gms.location.FusedLocationProviderClient
 
     // ============================================================
     // CONSTANTS
     // ============================================================
 
     private companion object {
-
+        private const val REQUEST_CAMERA_CAPTURE = 1006
+        const val REQUEST_LOCATION_PICKER = 1007
         const val REQUEST_GALLERY = 1001
         const val REQUEST_CAMERA = 1002
         const val REQUEST_LOCATION = 1003
         const val REQUEST_MAP_PICKER = 1004
         const val REQUEST_PHOTOS_PERMISSION = 1005
+        const val STATE_CAMERA_URI = "state_camera_uri"
 
         const val LIVE_LOCATION_DURATION_MS =
             15 * 60 * 1000L
@@ -211,12 +225,37 @@ class ChatActivity : Activity() {
     // CREATE
     // ============================================================
 
+    override fun onSaveInstanceState(
+        outState: Bundle
+    ) {
+        super.onSaveInstanceState(outState)
+
+        cameraPhotoUri?.let { uri ->
+
+            outState.putString(
+                STATE_CAMERA_URI,
+                uri.toString()
+            )
+        }
+    }
+
+
     override fun onCreate(
         savedInstanceState: Bundle?
     ) {
         super.onCreate(
             savedInstanceState
         )
+
+
+        cameraPhotoUri =
+            savedInstanceState
+                ?.getString(
+                    STATE_CAMERA_URI
+                )
+                ?.let {
+                    Uri.parse(it)
+                }
 
         setContentView(
             R.layout.activity_chat
@@ -231,6 +270,9 @@ class ChatActivity : Activity() {
             getSystemService(
                 LOCATION_SERVICE
             ) as LocationManager
+        fusedLocationClient =
+            LocationServices
+                .getFusedLocationProviderClient(this)
 
         initViews()
 
@@ -1316,6 +1358,10 @@ class ChatActivity : Activity() {
 // CAMERA
 // ============================================================
 
+    // ============================================================
+// CAMERA
+// ============================================================
+
     private fun openCamera() {
 
         if (
@@ -1341,61 +1387,81 @@ class ChatActivity : Activity() {
 
                     put(
                         MediaStore.Images.Media.DISPLAY_NAME,
-                        "camera_${System.currentTimeMillis()}.jpg"
+                        "GIBDD_${System.currentTimeMillis()}.jpg"
                     )
 
                     put(
                         MediaStore.Images.Media.MIME_TYPE,
                         "image/jpeg"
                     )
+
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+
+                        put(
+                            MediaStore.Images.Media.RELATIVE_PATH,
+                            Environment.DIRECTORY_PICTURES +
+                                    "/GIBDD"
+                        )
+                    }
                 }
 
-            cameraPhotoUri =
+            val uri =
                 contentResolver.insert(
                     MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
                     values
                 )
 
-            val uri =
-                cameraPhotoUri
-                    ?: throw IllegalStateException(
-                        "Не удалось создать файл фотографии"
-                    )
+            if (uri == null) {
+
+                Toast.makeText(
+                    this,
+                    "Не удалось создать файл фотографии",
+                    Toast.LENGTH_LONG
+                ).show()
+
+                return
+            }
+
+            cameraPhotoUri = uri
 
             val intent =
                 Intent(
                     MediaStore.ACTION_IMAGE_CAPTURE
-                ).apply {
+                )
 
-                    putExtra(
-                        MediaStore.EXTRA_OUTPUT,
-                        uri
-                    )
+            intent.putExtra(
+                MediaStore.EXTRA_OUTPUT,
+                uri
+            )
 
-                    addFlags(
-                        Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                    )
+            intent.addFlags(
+                Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            )
 
-                    addFlags(
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION
-                    )
-                }
+            intent.addFlags(
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
 
             startActivityForResult(
                 intent,
-                REQUEST_CAMERA
+                REQUEST_CAMERA_CAPTURE
             )
 
         } catch (e: Exception) {
 
-            cameraPhotoUri =
-                null
+            cameraPhotoUri = null
 
             Toast.makeText(
                 this,
-                "Камера недоступна: ${e.message}",
+                "Ошибка камеры: ${e.message}",
                 Toast.LENGTH_LONG
             ).show()
+
+            Log.e(
+                "CAMERA_DEBUG",
+                "openCamera error",
+                e
+            )
         }
     }
     // ============================================================
@@ -1507,12 +1573,10 @@ class ChatActivity : Activity() {
     }
 
     // ============================================================
-    // ACTIVITY RESULT
-    // ============================================================
+// ACTIVITY RESULT
+// ============================================================
 
-    @Deprecated(
-        "Deprecated in Android API"
-    )
+    @Deprecated("Deprecated in Android API")
     override fun onActivityResult(
         requestCode: Int,
         resultCode: Int,
@@ -1525,115 +1589,148 @@ class ChatActivity : Activity() {
             data
         )
 
-        if (
-            requestCode == REQUEST_GALLERY &&
-            resultCode == RESULT_OK
-        ) {
+        // ============================================================
+        // КАРТА
+        // ============================================================
 
-            val clipData =
-                data?.clipData
+        if (requestCode == REQUEST_MAP_PICKER) {
 
-            if (clipData != null) {
+            Log.d(
+                "LOCATION_DEBUG",
+                "Map result: resultCode=$resultCode data=$data"
+            )
 
-                for (i in 0 until clipData.itemCount) {
+            if (
+                resultCode != Activity.RESULT_OK ||
+                data == null
+            ) {
 
-                    val uri =
-                        clipData
-                            .getItemAt(i)
-                            .uri
+                Log.d(
+                    "LOCATION_DEBUG",
+                    "Выбор точки отменён"
+                )
 
-                    if (
-                        !selectedMediaUris.contains(uri)
-                    ) {
-
-                        selectedMediaUris.add(uri)
-                    }
-                }
-
-            } else {
-
-                val uri =
-                    data?.data
-
-                if (uri != null) {
-
-                    if (
-                        !selectedMediaUris.contains(uri)
-                    ) {
-
-                        selectedMediaUris.add(uri)
-                    }
-                }
+                return
             }
-
-            showPhotoOptions()
-
-            updateSelectedMediaButton()
-
-            return
-        }
-
-        if (
-            requestCode == REQUEST_CAMERA &&
-            resultCode == RESULT_OK
-        ) {
-
-            val uri =
-                cameraPhotoUri
-
-            cameraPhotoUri =
-                null
-
-            if (uri != null) {
-
-                onPhotoSelected(uri)
-
-            } else {
-
-                Toast.makeText(
-                    this,
-                    "Не удалось получить фотографию",
-                    Toast.LENGTH_SHORT
-                ).show()
-            }
-
-            return
-        }
-
-        if (
-            requestCode ==
-            REQUEST_MAP_PICKER &&
-            resultCode ==
-            RESULT_OK
-        ) {
 
             val latitude =
-                data?.getDoubleExtra(
-                    "latitude",
+                data.getDoubleExtra(
+                    MapPickerActivity.EXTRA_LATITUDE,
                     Double.NaN
                 )
-                    ?: Double.NaN
 
             val longitude =
-                data?.getDoubleExtra(
-                    "longitude",
+                data.getDoubleExtra(
+                    MapPickerActivity.EXTRA_LONGITUDE,
                     Double.NaN
                 )
-                    ?: Double.NaN
+
+            Log.d(
+                "LOCATION_DEBUG",
+                "Получены координаты: lat=$latitude lon=$longitude"
+            )
 
             if (
                 latitude.isNaN() ||
                 longitude.isNaN()
             ) {
+
+                Toast.makeText(
+                    this,
+                    "Не удалось получить координаты",
+                    Toast.LENGTH_LONG
+                ).show()
+
                 return
             }
 
-            closeAttachmentPanel()
+            // ========================================================
+            // СРАЗУ ОТПРАВЛЯЕМ НА СЕРВЕР
+            // ========================================================
 
-            sendLocation(
-                latitude,
-                longitude
-            )
+            scope.launch {
+
+                try {
+
+                    Log.d(
+                        "LOCATION_DEBUG",
+                        "Отправляю static location..."
+                    )
+
+                    repository.sendStaticLocation(
+                        latitude = latitude,
+                        longitude = longitude
+                    )
+
+                    Log.d(
+                        "LOCATION_DEBUG",
+                        "Static location успешно отправлена"
+                    )
+
+                    if (
+                        !isFinishing &&
+                        !isDestroyed
+                    ) {
+
+                        Toast.makeText(
+                            this@ChatActivity,
+                            "Местоположение отправлено",
+                            Toast.LENGTH_SHORT
+                        ).show()
+
+                        // Обновляем чат, чтобы сообщение появилось
+                        val messages =
+                            withContext(
+                                Dispatchers.IO
+                            ) {
+                                repository.getMessages(null)
+                            }
+
+                        if (
+                            !isFinishing &&
+                            !isDestroyed
+                        ) {
+
+                            renderMessages(
+                                messages,
+                                true
+                            )
+                        }
+                    }
+
+                } catch (
+                    e: CancellationException
+                ) {
+
+                    throw e
+
+                } catch (
+                    e: Exception
+                ) {
+
+                    Log.e(
+                        "LOCATION_DEBUG",
+                        "Ошибка отправки static location",
+                        e
+                    )
+
+                    if (
+                        !isFinishing &&
+                        !isDestroyed
+                    ) {
+
+                        Toast.makeText(
+                            this@ChatActivity,
+                            "Ошибка отправки местоположения: ${
+                                e.message ?: "неизвестная ошибка"
+                            }",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            }
+
+            return
         }
     }
 
@@ -2448,6 +2545,10 @@ class ChatActivity : Activity() {
 // CURRENT LOCATION
 // ============================================================
 
+    // ============================================================
+// SEND CURRENT STATIC LOCATION
+// ============================================================
+
     private fun sendCurrentLocation() {
 
         if (!hasLocationPermission()) {
@@ -2457,86 +2558,11 @@ class ChatActivity : Activity() {
             return
         }
 
+        if (isSending) {
+            return
+        }
+
         closeAttachmentPanel()
-
-        getLocationAndSend()
-    }
-
-    // ============================================================
-// GET LOCATION AND SEND
-// ============================================================
-
-    private fun getLocationAndSend() {
-
-        if (!hasLocationPermission()) {
-
-            requestLocationPermission()
-
-            return
-        }
-
-        var bestLocation: Location? = null
-
-        val providers = listOf(
-            LocationManager.GPS_PROVIDER,
-            LocationManager.NETWORK_PROVIDER
-        )
-
-        // ========================================================
-        // СНАЧАЛА ПРОБУЕМ ПОСЛЕДНЮЮ ИЗВЕСТНУЮ КООРДИНАТУ
-        // ========================================================
-
-        for (provider in providers) {
-
-            try {
-
-                if (
-                    !locationManager.isProviderEnabled(
-                        provider
-                    )
-                ) {
-                    continue
-                }
-
-                val location =
-                    locationManager.getLastKnownLocation(
-                        provider
-                    )
-
-                if (location != null) {
-
-                    if (
-                        bestLocation == null ||
-                        location.time > bestLocation!!.time
-                    ) {
-
-                        bestLocation =
-                            location
-                    }
-                }
-
-            } catch (_: SecurityException) {
-            } catch (_: Exception) {
-            }
-        }
-
-        // ========================================================
-        // ЕСЛИ КООРДИНАТА УЖЕ ЕСТЬ — ОТПРАВЛЯЕМ
-        // ========================================================
-
-        if (bestLocation != null) {
-
-            sendLocation(
-                bestLocation!!.latitude,
-                bestLocation!!.longitude
-            )
-
-            return
-        }
-
-        // ========================================================
-        // ИНАЧЕ ПОЛУЧАЕМ НОВУЮ
-        // ========================================================
 
         Toast.makeText(
             this,
@@ -2544,260 +2570,129 @@ class ChatActivity : Activity() {
             Toast.LENGTH_SHORT
         ).show()
 
-        requestOneLocation()
-    }
+        try {
 
-    // ============================================================
-// ONE LOCATION REQUEST
-// ============================================================
+            // ========================================================
+            // СНАЧАЛА БЕРЁМ ПОСЛЕДНЮЮ ИЗВЕСТНУЮ КООРДИНАТУ
+            // Это намного быстрее GPS-запроса.
+            // ========================================================
 
-    private fun requestOneLocation() {
-
-        if (!hasLocationPermission()) {
-            return
-        }
-
-        // Если старый listener ещё существует —
-        // сначала удаляем его.
-
-        locationListener?.let {
-
-            try {
-
-                locationManager.removeUpdates(it)
-
-            } catch (_: Exception) {
-            }
-        }
-
-        locationListener = null
-
-        var delivered = false
-
-        val listener =
-            object : LocationListener {
-
-                override fun onLocationChanged(
-                    location: Location
-                ) {
-
-                    if (delivered) {
-                        return
-                    }
-
-                    delivered = true
-
-                    try {
-
-                        locationManager.removeUpdates(
-                            this
-                        )
-
-                    } catch (_: Exception) {
-                    }
+            fusedLocationClient
+                .lastLocation
+                .addOnSuccessListener { location ->
 
                     if (
-                        locationListener === this
+                        location != null &&
+                        location.latitude in -90.0..90.0 &&
+                        location.longitude in -180.0..180.0
                     ) {
 
-                        locationListener = null
-                    }
-
-                    handler.removeCallbacksAndMessages(
-                        this
-                    )
-
-                    if (
-                        !isFinishing &&
-                        !isDestroyed
-                    ) {
+                        // Есть готовая координата —
+                        // отправляем сразу.
 
                         sendLocation(
                             location.latitude,
                             location.longitude
                         )
+
+                        return@addOnSuccessListener
                     }
+
+                    // ====================================================
+                    // ЕСЛИ ПОСЛЕДНЕЙ КООРДИНАТЫ НЕТ —
+                    // ЗАПРАШИВАЕМ НОВУЮ
+                    // ====================================================
+
+                    requestFreshLocation()
+
+                }
+                .addOnFailureListener {
+
+                    requestFreshLocation()
                 }
 
-                override fun onProviderDisabled(
-                    provider: String
-                ) {
-                    // Ничего не делаем.
-                    // Второй provider может продолжить работать.
-                }
-
-                override fun onProviderEnabled(
-                    provider: String
-                ) {
-                    // Ничего не делаем.
-                }
-            }
-
-        locationListener = listener
-
-        var requested = false
-
-        // ========================================================
-        // GPS
-        // ========================================================
-
-        try {
-
-            if (
-                locationManager.isProviderEnabled(
-                    LocationManager.GPS_PROVIDER
-                )
-            ) {
-
-                locationManager.requestLocationUpdates(
-                    LocationManager.GPS_PROVIDER,
-                    1000L,
-                    0f,
-                    listener,
-                    Looper.getMainLooper()
-                )
-
-                requested = true
-            }
-
-        } catch (_: SecurityException) {
-        } catch (_: Exception) {
-        }
-
-        // ========================================================
-        // NETWORK
-        // ========================================================
-
-        try {
-
-            if (
-                locationManager.isProviderEnabled(
-                    LocationManager.NETWORK_PROVIDER
-                )
-            ) {
-
-                locationManager.requestLocationUpdates(
-                    LocationManager.NETWORK_PROVIDER,
-                    1000L,
-                    0f,
-                    listener,
-                    Looper.getMainLooper()
-                )
-
-                requested = true
-            }
-
-        } catch (_: SecurityException) {
-        } catch (_: Exception) {
-        }
-
-        // ========================================================
-        // НИ ОДИН PROVIDER НЕ РАБОТАЕТ
-        // ========================================================
-
-        if (!requested) {
-
-            locationListener = null
+        } catch (
+            e: SecurityException
+        ) {
 
             Toast.makeText(
                 this,
-                "Не удалось определить местоположение. Включи GPS и геолокацию.",
+                "Нет разрешения на геолокацию",
                 Toast.LENGTH_LONG
             ).show()
 
+        } catch (
+            e: Exception
+        ) {
+
+            Toast.makeText(
+                this,
+                "Не удалось получить геопозицию: ${e.message}",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+    private fun requestFreshLocation() {
+
+        if (!hasLocationPermission()) {
             return
         }
 
-        // ========================================================
-        // TIMEOUT
-        // ========================================================
+        try {
 
-        handler.postDelayed(
-            {
+            val cancellationTokenSource =
+                CancellationTokenSource()
 
-                if (
-                    delivered ||
-                    locationListener !== listener
-                ) {
-                    return@postDelayed
-                }
+            fusedLocationClient
+                .getCurrentLocation(
+                    Priority.PRIORITY_BALANCED_POWER_ACCURACY,
+                    cancellationTokenSource.token
+                )
+                .addOnSuccessListener { location ->
 
-                delivered = true
+                    if (location != null) {
 
-                try {
+                        sendLocation(
+                            location.latitude,
+                            location.longitude
+                        )
 
-                    locationManager.removeUpdates(
-                        listener
-                    )
+                    } else {
 
-                } catch (_: Exception) {
-                }
-
-                locationListener = null
-
-                // ====================================================
-                // ПОСЛЕДНЯЯ ПОПЫТКА ВЗЯТЬ LAST KNOWN
-                // ====================================================
-
-                var fallback: Location? = null
-
-                val providers =
-                    listOf(
-                        LocationManager.GPS_PROVIDER,
-                        LocationManager.NETWORK_PROVIDER
-                    )
-
-                for (provider in providers) {
-
-                    try {
-
-                        val location =
-                            locationManager.getLastKnownLocation(
-                                provider
-                            )
-
-                        if (location != null) {
-
-                            if (
-                                fallback == null ||
-                                location.time > fallback!!.time
-                            ) {
-
-                                fallback = location
-                            }
-                        }
-
-                    } catch (_: SecurityException) {
-                    } catch (_: Exception) {
+                        getLastKnownLocationForSending()
                     }
                 }
+                .addOnFailureListener {
 
-                if (fallback != null) {
-
-                    sendLocation(
-                        fallback!!.latitude,
-                        fallback!!.longitude
-                    )
-
-                } else {
-
-                    Toast.makeText(
-                        this,
-                        "Не удалось получить местоположение. Проверь, включена ли геолокация.",
-                        Toast.LENGTH_LONG
-                    ).show()
+                    getLastKnownLocationForSending()
                 }
 
-            },
-            15_000L
-        )
+        } catch (
+            e: SecurityException
+        ) {
+
+            Toast.makeText(
+                this,
+                "Нет разрешения на геолокацию",
+                Toast.LENGTH_LONG
+            ).show()
+
+        } catch (
+            e: Exception
+        ) {
+
+            Toast.makeText(
+                this,
+                "Не удалось получить геопозицию",
+                Toast.LENGTH_LONG
+            ).show()
+        }
     }
-
     // ============================================================
-    // SEND STATIC LOCATION
-    // ============================================================
+// SEND STATIC LOCATION MESSAGE
+// ============================================================
 
-    private fun sendLocation(
+    private fun sendStaticLocationMessage(
         latitude: Double,
         longitude: Double
     ) {
@@ -2806,7 +2701,22 @@ class ChatActivity : Activity() {
             return
         }
 
-        isSending = true
+        if (
+            latitude !in -90.0..90.0 ||
+            longitude !in -180.0..180.0
+        ) {
+
+            Toast.makeText(
+                this,
+                "Получены некорректные координаты",
+                Toast.LENGTH_LONG
+            ).show()
+
+            return
+        }
+
+        isSending =
+            true
 
         sendButton.isEnabled =
             false
@@ -2818,24 +2728,19 @@ class ChatActivity : Activity() {
 
             try {
 
-                withContext(
-                    Dispatchers.IO
-                ) {
+                // ====================================================
+                // ОТПРАВЛЯЕМ СТАТИЧЕСКУЮ ГЕОЛОКАЦИЮ
+                // ====================================================
 
-                    repository
-                        .sendStaticLocation(
-                            latitude,
-                            longitude
-                        )
-                }
-
-                val messages =
+                val message =
                     withContext(
                         Dispatchers.IO
                     ) {
 
-                        repository
-                            .getMessages(null)
+                        repository.sendStaticLocation(
+                            latitude = latitude,
+                            longitude = longitude
+                        )
                     }
 
                 if (
@@ -2845,10 +2750,40 @@ class ChatActivity : Activity() {
                     return@launch
                 }
 
-                renderMessages(
-                    messages,
-                    true
+                // ====================================================
+                // СРАЗУ ПОКАЗЫВАЕМ ОТВЕТ СЕРВЕРА В ЧАТЕ
+                // ====================================================
+
+                val currentDeviceId =
+                    repository.getDeviceId()
+
+                addMessage(
+                    message,
+                    currentDeviceId
                 )
+
+                // ====================================================
+                // ПРОКРУТКА ВНИЗ
+                // ====================================================
+
+                chatScroll.post {
+
+                    if (
+                        !isFinishing &&
+                        !isDestroyed
+                    ) {
+
+                        chatScroll.fullScroll(
+                            ScrollView.FOCUS_DOWN
+                        )
+                    }
+                }
+
+                Toast.makeText(
+                    this@ChatActivity,
+                    "Местоположение отправлено",
+                    Toast.LENGTH_SHORT
+                ).show()
 
             } catch (
                 e: CancellationException
@@ -2867,7 +2802,9 @@ class ChatActivity : Activity() {
 
                     Toast.makeText(
                         this@ChatActivity,
-                        getErrorMessage(e),
+                        "Не удалось отправить геопозицию: ${
+                            getErrorMessage(e)
+                        }",
                         Toast.LENGTH_LONG
                     ).show()
                 }
@@ -2887,6 +2824,190 @@ class ChatActivity : Activity() {
 
                     attachButton.isEnabled =
                         true
+                }
+            }
+        }
+    }
+
+
+// ============================================================
+// LAST KNOWN LOCATION FALLBACK
+// ============================================================
+
+    private fun getLastKnownLocationForSending() {
+
+        if (!hasLocationPermission()) {
+            return
+        }
+
+        try {
+
+            fusedLocationClient
+                .lastLocation
+                .addOnSuccessListener { location ->
+
+                    if (
+                        location != null
+                    ) {
+
+                        sendStaticLocationMessage(
+                            location.latitude,
+                            location.longitude
+                        )
+
+                    } else {
+
+                        Toast.makeText(
+                            this,
+                            "Не удалось определить местоположение. Включи GPS и геолокацию.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+                .addOnFailureListener { error ->
+
+                    Toast.makeText(
+                        this,
+                        "Не удалось получить геопозицию: ${
+                            error.message ?: "неизвестная ошибка"
+                        }",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+
+        } catch (
+            e: SecurityException
+        ) {
+
+            Toast.makeText(
+                this,
+                "Нет разрешения на геолокацию",
+                Toast.LENGTH_LONG
+            ).show()
+
+        } catch (
+            e: Exception
+        ) {
+
+            Toast.makeText(
+                this,
+                "Ошибка геолокации: ${
+                    e.message ?: "неизвестная ошибка"
+                }",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+    // ============================================================
+// SEND STATIC LOCATION
+// ============================================================
+
+    private fun sendLocation(
+        latitude: Double,
+        longitude: Double
+    ) {
+
+        if (isSending) {
+            return
+        }
+
+        // Защита от невозможных координат
+        if (
+            latitude !in -90.0..90.0 ||
+            longitude !in -180.0..180.0
+        ) {
+
+            Toast.makeText(
+                this,
+                "Получены некорректные координаты",
+                Toast.LENGTH_LONG
+            ).show()
+
+            return
+        }
+
+        isSending = true
+
+        sendButton.isEnabled = false
+        attachButton.isEnabled = false
+
+        scope.launch {
+
+            try {
+
+                val message =
+                    withContext(
+                        Dispatchers.IO
+                    ) {
+
+                        repository
+                            .sendStaticLocation(
+                                latitude = latitude,
+                                longitude = longitude
+                            )
+                    }
+
+                if (
+                    isFinishing ||
+                    isDestroyed
+                ) {
+                    return@launch
+                }
+
+                // Сразу добавляем сообщение,
+                // которое вернул сервер.
+
+                val currentDeviceId =
+                    repository.getDeviceId()
+
+                addMessage(
+                    message,
+                    currentDeviceId
+                )
+
+                chatScroll.post {
+
+                    chatScroll.fullScroll(
+                        ScrollView.FOCUS_DOWN
+                    )
+                }
+
+            } catch (
+                e: CancellationException
+            ) {
+
+                throw e
+
+            } catch (
+                e: Exception
+            ) {
+
+                if (
+                    !isFinishing &&
+                    !isDestroyed
+                ) {
+
+                    Toast.makeText(
+                        this@ChatActivity,
+                        "Не удалось отправить геопозицию: ${
+                            getErrorMessage(e)
+                        }",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+
+            } finally {
+
+                isSending = false
+
+                if (
+                    !isFinishing &&
+                    !isDestroyed
+                ) {
+
+                    sendButton.isEnabled = true
+                    attachButton.isEnabled = true
                 }
             }
         }
@@ -3192,6 +3313,7 @@ class ChatActivity : Activity() {
 // PERMISSIONS
 // ============================================================
 
+
     override fun onRequestPermissionsResult(
         requestCode: Int,
         permissions: Array<out String>,
@@ -3220,10 +3342,10 @@ class ChatActivity : Activity() {
 
             if (granted) {
 
-                // СРАЗУ продолжаем действие,
-                // которое пользователь запросил.
+                // После получения разрешения
+                // продолжаем отправку текущей геопозиции.
 
-                getLocationAndSend()
+                sendCurrentLocation()
 
             } else {
 
@@ -3271,8 +3393,8 @@ class ChatActivity : Activity() {
         }
 
         // ========================================================
-        // CAMERA
-        // ========================================================
+// CAMERA
+// ========================================================
 
         if (
             requestCode == REQUEST_CAMERA
@@ -3300,7 +3422,6 @@ class ChatActivity : Activity() {
             return
         }
     }
-
     // ============================================================
     // LOAD MESSAGES
     // ============================================================
@@ -3982,10 +4103,6 @@ class ChatActivity : Activity() {
     }
 
     // ============================================================
-    // MEDIA MESSAGE
-    // ============================================================
-
-    // ============================================================
 // MEDIA MESSAGE
 // ============================================================
 
@@ -4051,7 +4168,7 @@ class ChatActivity : Activity() {
             true
 
         // ========================================================
-        // ПРОВЕРЯЕМ КЭШ
+        // CHECK CACHE
         // ========================================================
 
         val cachedBitmap =
@@ -4061,23 +4178,11 @@ class ChatActivity : Activity() {
 
         if (cachedBitmap != null) {
 
-            // ====================================================
-            // ФОТО УЖЕ ЕСТЬ В ПАМЯТИ
-            //
-            // Никакого placeholder.
-            // Никакой загрузки.
-            // Никакого мигания.
-            // ====================================================
-
             imageView.setImageBitmap(
                 cachedBitmap
             )
 
         } else {
-
-            // ====================================================
-            // ТОЛЬКО ПЕРВАЯ ЗАГРУЗКА
-            // ====================================================
 
             imageView.setImageResource(
                 android.R.drawable.ic_menu_gallery
@@ -4105,7 +4210,8 @@ class ChatActivity : Activity() {
         }
     }
 
-    // ============================================================
+
+// ============================================================
 // LOAD MEDIA INTO IMAGE VIEW
 // ============================================================
 
@@ -4114,8 +4220,10 @@ class ChatActivity : Activity() {
         imageView: ImageView
     ) {
 
-        // Если это фото уже кто-то загружает —
-        // второй запрос не создаём.
+        // --------------------------------------------------------
+        // Если эта фотография уже загружается,
+        // второй запрос НЕ создаём.
+        // --------------------------------------------------------
 
         if (
             mediaLoading.contains(
@@ -4139,21 +4247,27 @@ class ChatActivity : Activity() {
                     )
 
                 if (
-                    bitmap != null
+                    bitmap != null &&
+                    !bitmap.isRecycled
                 ) {
 
-                    // =================================================
-                    // СОХРАНЯЕМ В КЭШ
-                    // =================================================
+                    // ------------------------------------------------
+                    // КЭШ
+                    // ------------------------------------------------
 
                     mediaBitmapCache.put(
                         messageId,
                         bitmap
                     )
 
+                    // ------------------------------------------------
+                    // UI МЕНЯЕМ ТОЛЬКО НА MAIN
+                    // ------------------------------------------------
+
                     if (
                         !isFinishing &&
-                        !isDestroyed
+                        !isDestroyed &&
+                        imageView.isAttachedToWindow
                     ) {
 
                         imageView.setImageBitmap(
@@ -4162,7 +4276,31 @@ class ChatActivity : Activity() {
                     }
                 }
 
-            } catch (_: Exception) {
+            } catch (
+                e: CancellationException
+            ) {
+
+                throw e
+
+            } catch (
+                e: OutOfMemoryError
+            ) {
+
+                Log.e(
+                    "MEDIA_DEBUG",
+                    "Недостаточно памяти при отображении $messageId",
+                    e
+                )
+
+            } catch (
+                e: Exception
+            ) {
+
+                Log.e(
+                    "MEDIA_DEBUG",
+                    "Ошибка отображения MEDIA: $messageId",
+                    e
+                )
 
             } finally {
 
@@ -4172,10 +4310,13 @@ class ChatActivity : Activity() {
             }
         }
     }
+// ============================================================
+// LOAD MEDIA BITMAP
+// ============================================================
 
     // ============================================================
-    // LOAD MEDIA BITMAP
-    // ============================================================
+// LOAD MEDIA BITMAP
+// ============================================================
 
     private suspend fun loadMediaBitmap(
         messageId: String
@@ -4183,45 +4324,148 @@ class ChatActivity : Activity() {
 
         return try {
 
-            Log.d(
-                "MEDIA_DEBUG",
-                "Начинаю загрузку: $messageId"
-            )
+            withContext(Dispatchers.IO) {
 
-            val bytes =
-                withContext(
-                    Dispatchers.IO
-                ) {
-
-                    repository
-                        .downloadMedia(
-                            messageId
-                        )
-                }
-
-            Log.d(
-                "MEDIA_DEBUG",
-                "Получено байт: ${bytes.size}"
-            )
-
-            if (bytes.isEmpty()) {
-
-                Log.e(
+                Log.d(
                     "MEDIA_DEBUG",
-                    "Сервер вернул пустой файл"
+                    "Начинаю загрузку: $messageId"
                 )
 
-                null
+                val bytes =
+                    repository.downloadMedia(
+                        messageId
+                    )
 
-            } else {
+                Log.d(
+                    "MEDIA_DEBUG",
+                    "Получено байт: ${bytes.size}"
+                )
 
-                BitmapFactory
-                    .decodeByteArray(
+                if (bytes.isEmpty()) {
+
+                    Log.e(
+                        "MEDIA_DEBUG",
+                        "Сервер вернул пустой файл"
+                    )
+
+                    return@withContext null
+                }
+
+                // ====================================================
+                // Сначала узнаём размер изображения
+                // ====================================================
+
+                val boundsOptions =
+                    BitmapFactory.Options().apply {
+                        inJustDecodeBounds = true
+                    }
+
+                BitmapFactory.decodeByteArray(
+                    bytes,
+                    0,
+                    bytes.size,
+                    boundsOptions
+                )
+
+                val originalWidth =
+                    boundsOptions.outWidth
+
+                val originalHeight =
+                    boundsOptions.outHeight
+
+                Log.d(
+                    "MEDIA_DEBUG",
+                    "Размер оригинала: " +
+                            "${originalWidth}x${originalHeight}"
+                )
+
+                if (
+                    originalWidth <= 0 ||
+                    originalHeight <= 0
+                ) {
+
+                    Log.e(
+                        "MEDIA_DEBUG",
+                        "Не удалось определить размер изображения"
+                    )
+
+                    return@withContext null
+                }
+
+                // ====================================================
+                // Ограничиваем размер Bitmap.
+                //
+                // Нам не нужен огромный оригинал 3072x4080,
+                // потому что в чате картинка всё равно около 250dp.
+                // ====================================================
+
+                val maxWidth = 768
+                val maxHeight = 1024
+
+                var sampleSize = 1
+
+                while (
+                    originalWidth / sampleSize > maxWidth ||
+                    originalHeight / sampleSize > maxHeight
+                ) {
+
+                    sampleSize *= 2
+                }
+
+                Log.d(
+                    "MEDIA_DEBUG",
+                    "inSampleSize = $sampleSize"
+                )
+
+                // ====================================================
+                // Декодируем УЖЕ В IO
+                // ====================================================
+
+                val decodeOptions =
+                    BitmapFactory.Options().apply {
+
+                        inSampleSize =
+                            sampleSize
+
+                        inPreferredConfig =
+                            Bitmap.Config.RGB_565
+
+                        inDither =
+                            true
+                    }
+
+                val bitmap =
+                    BitmapFactory.decodeByteArray(
                         bytes,
                         0,
-                        bytes.size
+                        bytes.size,
+                        decodeOptions
                     )
+
+                if (bitmap != null) {
+
+                    Log.d(
+                        "MEDIA_DEBUG",
+                        "Bitmap создан: " +
+                                "${bitmap.width}x${bitmap.height}, " +
+                                "bytes=${bitmap.allocationByteCount}"
+                    )
+                } else {
+
+                    Log.e(
+                        "MEDIA_DEBUG",
+                        "BitmapFactory вернул null"
+                    )
+                }
+
+                bitmap
             }
+
+        } catch (
+            e: CancellationException
+        ) {
+
+            throw e
 
         } catch (
             e: Exception
@@ -4229,7 +4473,7 @@ class ChatActivity : Activity() {
 
             Log.e(
                 "MEDIA_DEBUG",
-                "Ошибка загрузки MEDIA",
+                "Ошибка загрузки MEDIA: $messageId",
                 e
             )
 
